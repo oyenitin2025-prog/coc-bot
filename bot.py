@@ -1,36 +1,35 @@
 import os
 import json
+import re
 from datetime import datetime, timedelta
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes,
     MessageHandler,
+    ContextTypes,
     filters,
 )
 
-# =========================
-# CONFIG
-# =========================
+# =====================================
+# ENV
+# =====================================
 
-DATA_FILE = "data.json"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+DATA_FILE = "data.json"
 
 
-# =========================
+# =====================================
 # STORAGE
-# =========================
+# =====================================
 
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {"accounts": {}}
+
     with open(DATA_FILE, "r") as f:
         return json.load(f)
 
@@ -40,40 +39,54 @@ def save_data(data):
         json.dump(data, f, indent=2)
 
 
-# =========================
-# HELPERS
-# =========================
+# =====================================
+# TIME PARSER (UNLIMITED FLEXIBLE)
+# =====================================
 
 def parse_time(text):
     """
-    user types:
+    Accepts ANY format:
     2h
-    3h30m
-    45m
+    30m
+    1d
+    5d16h
+    10d22h
+    14H53m
+    1d2h30m
+    1D 2H 30M
     """
-    hours = 0
-    minutes = 0
 
-    if "h" in text:
-        hours = int(text.split("h")[0])
+    text = text.lower().replace(" ", "")
 
-    if "m" in text:
-        minutes = int(text.split("m")[0].split("h")[-1])
+    days = hours = minutes = 0
 
-    return timedelta(hours=hours, minutes=minutes)
+    d = re.search(r"(\d+)d", text)
+    h = re.search(r"(\d+)h", text)
+    m = re.search(r"(\d+)m", text)
+
+    if d:
+        days = int(d.group(1))
+    if h:
+        hours = int(h.group(1))
+    if m:
+        minutes = int(m.group(1))
+
+    return timedelta(days=days, hours=hours, minutes=minutes)
 
 
-def account_keyboard(data):
-    buttons = []
+# =====================================
+# KEYBOARDS
+# =====================================
+
+def home_keyboard(data):
+    rows = []
 
     for name in data["accounts"]:
-        buttons.append(
-            [InlineKeyboardButton(name, callback_data=f"acc:{name}")]
-        )
+        rows.append([InlineKeyboardButton(name, callback_data=f"acc:{name}")])
 
-    buttons.append([InlineKeyboardButton("➕ Add Account", callback_data="add")])
+    rows.append([InlineKeyboardButton("➕ Add Account", callback_data="add")])
 
-    return InlineKeyboardMarkup(buttons)
+    return InlineKeyboardMarkup(rows)
 
 
 def section_keyboard(name):
@@ -85,167 +98,135 @@ def section_keyboard(name):
     ])
 
 
-# =========================
+# =====================================
 # COMMANDS
-# =========================
+# =====================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
 
     await update.message.reply_text(
-        "🏰 Clash Tracker Bot\n\nSelect account:",
-        reply_markup=account_keyboard(data)
+        "🏰 Clash Builder Tracker\n\nSelect account:",
+        reply_markup=home_keyboard(data)
     )
 
 
-# =========================
-# CALLBACK HANDLER
-# =========================
+# =====================================
+# BUTTON HANDLER
+# =====================================
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     data = load_data()
     d = query.data
 
-    # home
     if d == "home":
-        await query.edit_message_text(
-            "Select account:",
-            reply_markup=account_keyboard(data)
-        )
+        await query.edit_message_text("Select account:", reply_markup=home_keyboard(data))
 
-    # add account
     elif d == "add":
-        context.user_data["mode"] = "add_account"
+        context.user_data["mode"] = "add"
         await query.edit_message_text("Send account name:")
 
-    # open account
     elif d.startswith("acc:"):
         name = d.split(":")[1]
+        await query.edit_message_text(f"📌 {name}", reply_markup=section_keyboard(name))
 
-        await query.edit_message_text(
-            f"📌 {name}",
-            reply_markup=section_keyboard(name)
-        )
-
-    # builders
     elif d.startswith("builders:"):
         name = d.split(":")[1]
-
-        context.user_data["mode"] = "builder_time"
-        context.user_data["account"] = name
-
+        context.user_data = {"mode": "builders", "account": name}
         await query.edit_message_text(
-            "Send builder times for 6 builders.\n\nExample:\n2h 1h 30m 0 5h 3h"
+            "Send 6 builder times separated by space.\n\nExample:\n2h 1d 5d16h 0 3h 45m"
         )
 
-    # lab
     elif d.startswith("lab:"):
         name = d.split(":")[1]
+        context.user_data = {"mode": "lab", "account": name}
+        await query.edit_message_text("Send lab time (example: 3d5h or 0)")
 
-        context.user_data["mode"] = "lab_time"
-        context.user_data["account"] = name
-
-        await query.edit_message_text("Send lab time (example: 3h30m or 0)")
-
-    # pet
     elif d.startswith("pet:"):
         name = d.split(":")[1]
-
-        context.user_data["mode"] = "pet_time"
-        context.user_data["account"] = name
-
-        await query.edit_message_text("Send pet house time (example: 2h or 0)")
+        context.user_data = {"mode": "pet", "account": name}
+        await query.edit_message_text("Send pet time (example: 2d or 0)")
 
 
-# =========================
-# TEXT INPUT HANDLER
-# =========================
+# =====================================
+# TEXT HANDLER
+# =====================================
 
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     mode = context.user_data.get("mode")
-
     data = load_data()
 
-    # =====================
-    # ADD ACCOUNT
-    # =====================
-    if mode == "add_account":
-        name = text
+    now = datetime.utcnow()
 
-        data["accounts"][name] = {
+    # ADD ACCOUNT
+    if mode == "add":
+        data["accounts"][text] = {
             "builders": [None] * 6,
             "lab": None,
-            "pet": None
+            "pet": None,
         }
-
         save_data(data)
         context.user_data.clear()
 
-        await update.message.reply_text("✅ Added!\n/start")
+        await update.message.reply_text("✅ Added!\nUse /start")
 
-    # =====================
     # BUILDERS
-    # =====================
-    elif mode == "builder_time":
+    elif mode == "builders":
         name = context.user_data["account"]
         parts = text.split()
 
-        times = []
+        if len(parts) != 6:
+            await update.message.reply_text("Please send exactly 6 times.")
+            return
 
-        now = datetime.utcnow()
+        times = []
 
         for p in parts:
             if p == "0":
                 times.append(None)
-            else:
-                finish = now + parse_time(p)
-                times.append(finish.isoformat())
+                continue
 
-                schedule_reminder(context, finish, f"🧱 Builder finished for {name}")
+            finish = now + parse_time(p)
+            times.append(finish.isoformat())
+
+            schedule(context, finish, f"🧱 Builder finished for {name}")
 
         data["accounts"][name]["builders"] = times
         save_data(data)
-
         context.user_data.clear()
 
         await update.message.reply_text("✅ Builders updated!")
 
-    # =====================
     # LAB
-    # =====================
-    elif mode == "lab_time":
+    elif mode == "lab":
         name = context.user_data["account"]
 
-        if text == "0":
-            data["accounts"][name]["lab"] = None
-        else:
-            finish = datetime.utcnow() + parse_time(text)
+        if text != "0":
+            finish = now + parse_time(text)
+            schedule(context, finish, f"🧪 Lab finished for {name}")
             data["accounts"][name]["lab"] = finish.isoformat()
-
-            schedule_reminder(context, finish, f"🧪 Lab finished for {name}")
+        else:
+            data["accounts"][name]["lab"] = None
 
         save_data(data)
         context.user_data.clear()
 
         await update.message.reply_text("✅ Lab updated!")
 
-    # =====================
     # PET
-    # =====================
-    elif mode == "pet_time":
+    elif mode == "pet":
         name = context.user_data["account"]
 
-        if text == "0":
-            data["accounts"][name]["pet"] = None
-        else:
-            finish = datetime.utcnow() + parse_time(text)
+        if text != "0":
+            finish = now + parse_time(text)
+            schedule(context, finish, f"🐶 Pet House finished for {name}")
             data["accounts"][name]["pet"] = finish.isoformat()
-
-            schedule_reminder(context, finish, f"🐶 Pet House finished for {name}")
+        else:
+            data["accounts"][name]["pet"] = None
 
         save_data(data)
         context.user_data.clear()
@@ -253,37 +234,33 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Pet updated!")
 
 
-# =========================
-# REMINDER SYSTEM
-# =========================
+# =====================================
+# REMINDERS
+# =====================================
 
-def schedule_reminder(context, finish_time, message):
-    seconds = (finish_time - datetime.utcnow()).total_seconds()
+def schedule(context, finish, message):
+    seconds = (finish - datetime.utcnow()).total_seconds()
 
-    if seconds <= 0:
-        return
+    context.job_queue.run_once(send_msg, seconds, data=message)
 
-    context.job_queue.run_once(send_message, seconds, data=message)
-
-    # 1 hour reminder
     if seconds > 3600:
-        context.job_queue.run_once(send_message, seconds - 3600, data=f"⏰ 1 hour left\n{message}")
+        context.job_queue.run_once(send_msg, seconds - 3600, data=f"⏰ 1 hour left\n{message}")
 
 
-async def send_message(context):
+async def send_msg(context):
     await context.bot.send_message(chat_id=CHAT_ID, text=context.job.data)
 
 
-# =========================
+# =====================================
 # MAIN (NO ASYNCIO BUGS)
-# =========================
+# =====================================
 
 def main():
-    app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input))
 
     print("Bot running...")
     app.run_polling()
