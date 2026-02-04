@@ -3,7 +3,7 @@ import json
 import re
 from datetime import datetime, timedelta
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -13,117 +13,103 @@ from telegram.ext import (
     filters,
 )
 
-# =====================================
-# ENV
-# =====================================
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+
 DATA_FILE = "data.json"
 
 
-# =====================================
-# STORAGE
-# =====================================
+# =========================
+# SAFE STORAGE (AUTO CREATE)
+# =========================
 
 def load_data():
     if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w") as f:
+            json.dump({"accounts": {}}, f)
         return {"accounts": {}}
 
-    with open(DATA_FILE, "r") as f:
+    with open(DATA_FILE) as f:
         return json.load(f)
 
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(data, f)
 
 
-# =====================================
-# TIME PARSER (UNLIMITED FLEXIBLE)
-# =====================================
+# =========================
+# TIME PARSER
+# =========================
 
-def parse_time(text):
-    """
-    Accepts ANY format:
-    2h
-    30m
-    1d
-    5d16h
-    10d22h
-    14H53m
-    1d2h30m
-    1D 2H 30M
-    """
+def parse_time(t):
+    t = t.lower()
 
-    text = text.lower().replace(" ", "")
+    d = re.search(r"(\d+)d", t)
+    h = re.search(r"(\d+)h", t)
+    m = re.search(r"(\d+)m", t)
 
-    days = hours = minutes = 0
-
-    d = re.search(r"(\d+)d", text)
-    h = re.search(r"(\d+)h", text)
-    m = re.search(r"(\d+)m", text)
-
-    if d:
-        days = int(d.group(1))
-    if h:
-        hours = int(h.group(1))
-    if m:
-        minutes = int(m.group(1))
-
-    return timedelta(days=days, hours=hours, minutes=minutes)
-
-
-# =====================================
-# KEYBOARDS
-# =====================================
-
-def home_keyboard(data):
-    rows = []
-
-    for name in data["accounts"]:
-        rows.append([InlineKeyboardButton(name, callback_data=f"acc:{name}")])
-
-    rows.append([InlineKeyboardButton("➕ Add Account", callback_data="add")])
-
-    return InlineKeyboardMarkup(rows)
-
-
-def section_keyboard(name):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧱 Builders", callback_data=f"builders:{name}")],
-        [InlineKeyboardButton("🧪 Lab", callback_data=f"lab:{name}")],
-        [InlineKeyboardButton("🐶 Pet House", callback_data=f"pet:{name}")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="home")]
-    ])
-
-
-# =====================================
-# COMMANDS
-# =====================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-
-    await update.message.reply_text(
-        "🏰 Clash Builder Tracker\n\nSelect account:",
-        reply_markup=home_keyboard(data)
+    return timedelta(
+        days=int(d.group(1)) if d else 0,
+        hours=int(h.group(1)) if h else 0,
+        minutes=int(m.group(1)) if m else 0,
     )
 
 
-# =====================================
-# BUTTON HANDLER
-# =====================================
+# =========================
+# KEYBOARDS
+# =========================
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def home_keyboard():
+    data = load_data()
+
+    buttons = [
+        [InlineKeyboardButton(name, callback_data=f"acc:{name}")]
+        for name in data["accounts"]
+    ]
+
+    buttons.append([InlineKeyboardButton("+ Add Account", callback_data="add")])
+
+    return InlineKeyboardMarkup(buttons)
+
+
+def menu_keyboard(name):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Builders", callback_data=f"builders:{name}")],
+        [InlineKeyboardButton("Lab", callback_data=f"lab:{name}")],
+        [InlineKeyboardButton("Pet House", callback_data=f"pet:{name}")],
+        [InlineKeyboardButton("Back", callback_data="home")]
+    ])
+
+
+# =========================
+# COMMANDS
+# =========================
+
+async def start(update, context):
+    await update.message.reply_text(
+        "Clash Builder Tracker\n\nSelect account:",
+        reply_markup=home_keyboard()
+    )
+
+
+# =========================
+# BUTTONS
+# =========================
+
+async def buttons(update, context):
     query = update.callback_query
     await query.answer()
 
     data = load_data()
+
     d = query.data
 
     if d == "home":
-        await query.edit_message_text("Select account:", reply_markup=home_keyboard(data))
+        await query.edit_message_text(
+            "Select account:",
+            reply_markup=home_keyboard()
+        )
 
     elif d == "add":
         context.user_data["mode"] = "add"
@@ -131,138 +117,65 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif d.startswith("acc:"):
         name = d.split(":")[1]
-        await query.edit_message_text(f"📌 {name}", reply_markup=section_keyboard(name))
+        await query.edit_message_text(name, reply_markup=menu_keyboard(name))
 
     elif d.startswith("builders:"):
         name = d.split(":")[1]
         context.user_data = {"mode": "builders", "account": name}
-        await query.edit_message_text(
-            "Send 6 builder times separated by space.\n\nExample:\n2h 1d 5d16h 0 3h 45m"
-        )
+        await query.edit_message_text("Send 6 builder times (example: 2h 1d 0 5h 3h 30m")
 
     elif d.startswith("lab:"):
-        name = d.split(":")[1]
-        context.user_data = {"mode": "lab", "account": name}
-        await query.edit_message_text("Send lab time (example: 3d5h or 0)")
+        context.user_data = {"mode": "lab", "account": d.split(":")[1]}
+        await query.edit_message_text("Send lab time or 0")
 
     elif d.startswith("pet:"):
-        name = d.split(":")[1]
-        context.user_data = {"mode": "pet", "account": name}
-        await query.edit_message_text("Send pet time (example: 2d or 0)")
+        context.user_data = {"mode": "pet", "account": d.split(":")[1]}
+        await query.edit_message_text("Send pet time or 0")
 
 
-# =====================================
-# TEXT HANDLER
-# =====================================
+# =========================
+# TEXT
+# =========================
 
-async def text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+async def text(update, context):
+    text = update.message.text
     mode = context.user_data.get("mode")
     data = load_data()
 
     now = datetime.utcnow()
 
-    # ADD ACCOUNT
     if mode == "add":
-        data["accounts"][text] = {
-            "builders": [None] * 6,
-            "lab": None,
-            "pet": None,
-        }
+        data["accounts"][text] = {"builders": []}
         save_data(data)
         context.user_data.clear()
+        await update.message.reply_text("Added!\n/start")
 
-        await update.message.reply_text("✅ Added!\nUse /start")
-
-    # BUILDERS
     elif mode == "builders":
         name = context.user_data["account"]
         parts = text.split()
 
-        if len(parts) != 6:
-            await update.message.reply_text("Please send exactly 6 times.")
-            return
-
-        times = []
-
-        for p in parts:
-            if p == "0":
-                times.append(None)
-                continue
-
-            finish = now + parse_time(p)
-            times.append(finish.isoformat())
-
-            schedule(context, finish, f"🧱 Builder finished for {name}")
-
-        data["accounts"][name]["builders"] = times
-        save_data(data)
-        context.user_data.clear()
-
-        await update.message.reply_text("✅ Builders updated!")
-
-    # LAB
-    elif mode == "lab":
-        name = context.user_data["account"]
-
-        if text != "0":
-            finish = now + parse_time(text)
-            schedule(context, finish, f"🧪 Lab finished for {name}")
-            data["accounts"][name]["lab"] = finish.isoformat()
-        else:
-            data["accounts"][name]["lab"] = None
+        data["accounts"][name]["builders"] = [
+            (now + parse_time(p)).isoformat() if p != "0" else None
+            for p in parts
+        ]
 
         save_data(data)
         context.user_data.clear()
-
-        await update.message.reply_text("✅ Lab updated!")
-
-    # PET
-    elif mode == "pet":
-        name = context.user_data["account"]
-
-        if text != "0":
-            finish = now + parse_time(text)
-            schedule(context, finish, f"🐶 Pet House finished for {name}")
-            data["accounts"][name]["pet"] = finish.isoformat()
-        else:
-            data["accounts"][name]["pet"] = None
-
-        save_data(data)
-        context.user_data.clear()
-
-        await update.message.reply_text("✅ Pet updated!")
+        await update.message.reply_text("Builders saved!")
 
 
-# =====================================
-# REMINDERS
-# =====================================
-
-def schedule(context, finish, message):
-    seconds = (finish - datetime.utcnow()).total_seconds()
-
-    context.job_queue.run_once(send_msg, seconds, data=message)
-
-    if seconds > 3600:
-        context.job_queue.run_once(send_msg, seconds - 3600, data=f"⏰ 1 hour left\n{message}")
-
-
-async def send_msg(context):
-    await context.bot.send_message(chat_id=CHAT_ID, text=context.job.data)
-
-
-# =====================================
-# MAIN (NO ASYNCIO BUGS)
-# =====================================
+# =========================
+# MAIN
+# =========================
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
 
-    print("Bot running...")
+    print("RUNNING...")
     app.run_polling()
 
 
