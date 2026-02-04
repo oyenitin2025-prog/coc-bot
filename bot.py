@@ -1,41 +1,36 @@
 import os
 import re
 import json
-import asyncio
 from datetime import datetime, timedelta
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
     filters,
 )
 
-# =============================
+# =================================
 # CONFIG
-# =============================
+# =================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # ← comes from Railway variable
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise Exception("BOT_TOKEN not found in environment variables")
+    raise Exception("BOT_TOKEN missing in Railway variables")
 
 DATA_FILE = "data.json"
 
 
-# =============================
+# =================================
 # STORAGE
-# =============================
+# =================================
 
 def load_data():
-    if not os.path.exists(DATA_FILE):
+    if not os.data_file.exists(DATA_FILE):
         return {}
     with open(DATA_FILE, "r") as f:
         return json.load(f)
@@ -46,19 +41,23 @@ def save_data(data):
         json.dump(data, f)
 
 
-data = load_data()
+def get_user_accounts(uid):
+    data = load_data()
+    return data.get(uid, {})
 
 
-# =============================
-# TIME PARSER (any d/h/m)
-# =============================
+def add_account(uid, name):
+    data = load_data()
+    data.setdefault(uid, {})
+    data[uid][name] = {}
+    save_data(data)
 
-def parse_time(text: str):
-    """
-    Accepts:
-    2h 3h 30m 1d 0 5h etc
-    """
 
+# =================================
+# TIME PARSER
+# =================================
+
+def parse_time(text):
     total = timedelta()
 
     for part in text.split():
@@ -82,62 +81,65 @@ def parse_time(text: str):
     return total
 
 
-# =============================
-# START MENU
-# =============================
+# =================================
+# START MENU (FIXED)
+# =================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("➕ Add Account", callback_data="add_account")]
-    ]
+    uid = str(update.effective_user.id)
+
+    accounts = get_user_accounts(uid)
+
+    keyboard = []
+
+    for acc in accounts:
+        keyboard.append(
+            [InlineKeyboardButton(f"🏰 {acc}", callback_data=f"account|{acc}")]
+        )
+
+    keyboard.append([InlineKeyboardButton("➕ Add Account", callback_data="add")])
 
     await update.message.reply_text(
         "🏰 *Clash Builder Tracker*\n\nSelect account:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-# =============================
+# =================================
 # ADD ACCOUNT
-# =============================
+# =================================
 
-async def add_account_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
+    context.user_data["adding"] = True
     await update.callback_query.message.reply_text("✏️ Send account name:")
-    context.user_data["adding_account"] = True
 
 
-async def handle_account_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("adding_account"):
+async def handle_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("adding"):
         return
 
-    name = update.message.text
     uid = str(update.effective_user.id)
+    name = update.message.text
 
-    data.setdefault(uid, {})
-    data[uid][name] = {}
+    add_account(uid, name)
 
-    save_data(data)
+    context.user_data["adding"] = False
 
-    context.user_data["adding_account"] = False
-
-    await update.message.reply_text(
-        f"✅ Added *{name}*\nUse /start",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"✅ Added {name}\nUse /start")
 
 
-# =============================
+# =================================
 # ACCOUNT MENU
-# =============================
+# =================================
 
-async def account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def account_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     account = query.data.split("|")[1]
-    context.user_data["selected_account"] = account
+    context.user_data["selected"] = account
 
     keyboard = [
         [InlineKeyboardButton("🧱 Builders", callback_data="builders")],
@@ -146,41 +148,36 @@ async def account_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.message.reply_text(
         f"📌 *{account}*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
-# =============================
-# BUILDERS CLICK
-# =============================
+# =================================
+# BUILDERS
+# =================================
 
 async def builders_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-
-    context.user_data["waiting_builders"] = True
+    context.user_data["builders"] = True
 
     await update.callback_query.message.reply_text(
-        "🧱 Send builder times\n\nExample:\n2h 1h 30m 0 5h 3h"
+        "🧱 Send 6 builder times\n\nExample:\n2h 1h 30m 0 5h 3h"
     )
 
 
-# =============================
-# HANDLE BUILDER TIMES
-# =============================
-
 async def handle_builders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("waiting_builders"):
+    if not context.user_data.get("builders"):
         return
 
-    context.user_data["waiting_builders"] = False
+    context.user_data["builders"] = False
 
-    times = update.message.text.split()
     now = datetime.now()
+    parts = update.message.text.split()
 
     messages = []
 
-    for i, t in enumerate(times, start=1):
+    for i, t in enumerate(parts, start=1):
         delta = parse_time(t)
 
         if delta.total_seconds() == 0:
@@ -192,33 +189,30 @@ async def handle_builders(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🧱 Builder {i} → {finish.strftime('%H:%M %d %b')}"
         )
 
-        # reminder
-        async def reminder(ctx):
-            await ctx.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"⏰ Builder {i} finished!"
-            )
+        async def reminder(ctx, chat_id=update.effective_chat.id, idx=i):
+            await ctx.bot.send_message(chat_id, f"⏰ Builder {idx} finished!")
 
         context.job_queue.run_once(reminder, delta.total_seconds())
 
     if not messages:
-        await update.message.reply_text("❌ No valid times found")
+        await update.message.reply_text("❌ Invalid format")
         return
 
     await update.message.reply_text("\n".join(messages))
 
 
-# =============================
+# =================================
 # MAIN
-# =============================
+# =================================
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(add_account_click, pattern="add_account"))
+    app.add_handler(CallbackQueryHandler(add_click, pattern="add"))
+    app.add_handler(CallbackQueryHandler(account_click, pattern="account"))
     app.add_handler(CallbackQueryHandler(builders_click, pattern="builders"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_account_name))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_account))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_builders))
 
     print("🚀 Bot running...")
